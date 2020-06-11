@@ -1,0 +1,105 @@
+---
+title: "Improved blblm package"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{JC-blblm}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Summary
+
+blblm package is for doing linear model computation with *bag of little bootstraps* (BLB). Bag of little bootstrap is a procedure that incorporates bootstrap and resampling to prodce a computationally efficient, yet robust way of estimation.
+
+# blblm Package
+
+To download and install blblm package with single R command:
+```{r}
+devtools::install_github("ucdavis-sta141c-sq-2020/blblm")
+```
+
+To load the package and examine other packages attached when you use blblm:
+```{r setup}
+library(blblm)
+```
+
+# Design Principles
+
+The improved package aims to increase the efficiency of linear model computation. On top of the original version of blblm package, this version enables user-specified parallel computing, using input of multiple files and the choice of logistic regression.
+
+## Parallelization
+
+The function is written in the following:
+
+```{r}
+blblm_par_sing <- function(formula, data, m, B, nCluster=1){
+  data_list <- split_data(data, m)
+  suppressWarnings(plan(multiprocess, workers = nCluster))
+  estimates <- future_map(data_list,
+                         ~lm_each_subsample(formula = formula, data = ., n = nrow(data), B = B))
+  res <- list(estimates = estimates, formula = formula)
+  class(res) <- "blblm"
+  invisible(res)
+}
+```
+
+plan(multiprocess, workers = nCluster) enables parallelization, which is accompanied by future_map from library(furrr) for the computing. User inputs the regression x and y terms, the data source, number of data splits, number of bootstraps and desired number of clusters to use as the parameters.
+
+```{r, include=FALSE}
+library(furrr)
+```
+
+
+```{r, eval=FALSE}
+fit <- blblm_par_sing(mpg ~ wt * hp, data = mtcars, m=3, B=100, nCluster = 4)
+coef(fit)
+```
+
+## Multiple files capable
+
+Similar to the implementation of parallel computing version of blblm, this version can be used when user wants to use a list of specified files.
+
+```{r}
+blblm_par <- function(formula, file_names, m, B, nCluster){
+  suppressWarnings(plan(multiprocess, workers = nCluster))
+  data <- file_names %>% future_map(.,~read_csv(col_types = cols()))
+  data_list <- split_data(data, m)
+  estimates <- future_map(data_list,
+                            ~lm_each_subsample(formula = formula, data = ., n = nrow(data), B = B))
+  res <- list(estimates = estimates, formula = formula)
+  class(res) <- "blblm"
+  invisible(res)
+}
+```
+
+On top of the previous version blblm_par_sing, this version has the data input field as file_names, which takes a list of filenames for data extraction.
+
+## Logistic Regression
+
+A replicate of blblm in logistic regression. Input parameters stay the same with the previous version, and take a list of file names as data input
+
+```{r}
+blblm_lr <- function(formula, data, m, B, nCluster){
+  suppressWarnings(plan(multiprocess, workers = nCluster))
+  data <- file_names %>% future_map(.,~read_csv(col_types = cols()))
+  data_list <- split_data(data, m)
+  estimates <- future_map(data_list,
+                          ~lr_each_subsample(formula = formula, data = ., n = nrow(data), B = B))
+  res <- list(estimates = estimates, formula = formula)
+  class(res) <- "blblm"
+  invisible(res)
+}
+```
+
+
+
+
+
+

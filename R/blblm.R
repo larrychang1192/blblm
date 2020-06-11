@@ -1,6 +1,11 @@
 #' @import purrr
 #' @import stats
+#' @import tidyverse
+#' @import parallel
+#' @import furrr
 #' @importFrom magrittr %>%
+#' @importFrom utils capture.out
+#' @aliases NULL
 #' @details
 #' Linear Regression with Little Bag of Bootstraps
 "_PACKAGE"
@@ -11,17 +16,57 @@
 utils::globalVariables(c("."))
 
 
+#' @param formula for the regression
+#' @param data datasets for regression
+#' @param m split
+#' @param B bootstrap
 #' @export
-blblm <- function(formula, data, m = 10, B = 5000) {
+#' Original blblm with parallelization specification
+blblm_par_sing <- function(formula, data, m, B, nCluster=1){
   data_list <- split_data(data, m)
-  estimates <- map(
-    data_list,
-    ~ lm_each_subsample(formula = formula, data = ., n = nrow(data), B = B))
+  suppressWarnings(plan(multiprocess, workers = nCluster))
+  estimates <- future_map(data_list,
+                          ~lm_each_subsample(formula = formula, data = ., n = nrow(data), B = B))
   res <- list(estimates = estimates, formula = formula)
   class(res) <- "blblm"
   invisible(res)
 }
 
+#' @param formula regression formula
+#' @param file_names a list of file names
+#' @param number of splits
+#' @param B bootstraps
+#' @nCluster number of clusters to be used
+#' @export
+#' blblm with parallelization and multiple files capable
+blblm_par <- function(formula, file_names, m, B, nCluster){
+  suppressWarnings(plan(multiprocess, workers = nCluster))
+  data <- file_names %>% future_map(.,~read_csv(col_types = cols()))
+  data_list <- split_data(data, m)
+  estimates <- future_map(data_list,
+                            ~lm_each_subsample(formula = formula, data = ., n = nrow(data), B = B))
+  res <- list(estimates = estimates, formula = formula)
+  class(res) <- "blblm"
+  invisible(res)
+}
+
+#' @param formula logistic regression formula
+#' @param data datasets for logistic regression
+#' @param m number of splits
+#' @param B boostraps
+#' @param nCluster number of clusters to use
+#' @export
+#' Logistic regression version of bag of little bootstraps
+blblm_lr <- function(formula, data, m, B, nCluster){
+  suppressWarnings(plan(multiprocess, workers = nCluster))
+  data <- file_names %>% future_map(.,~read_csv(col_types = cols()))
+  data_list <- split_data(data, m)
+  estimates <- future_map(data_list,
+                          ~lr_each_subsample(formula = formula, data = ., n = nrow(data), B = B))
+  res <- list(estimates = estimates, formula = formula)
+  class(res) <- "blblm"
+  invisible(res)
+}
 
 #' split data into m parts of approximated equal sizes
 split_data <- function(data, m) {
@@ -35,11 +80,22 @@ lm_each_subsample <- function(formula, data, n, B) {
   replicate(B, lm_each_boot(formula, data, n), simplify = FALSE)
 }
 
+#' compute the estimates
+lr_each_subsample <- function(formula, data, n, B) {
+  replicate(B, lr_each_boot(formula, data, n), simplify = FALSE)
+}
+
 
 #' compute the regression estimates for a blb dataset
 lm_each_boot <- function(formula, data, n) {
   freqs <- rmultinom(1, n, rep(1, nrow(data)))
   lm1(formula, data, freqs)
+}
+
+#' compute the regression estimates for a blb dataset
+lr_each_boot <- function(formula, data, n) {
+  freqs <- rmultinom(1, n, rep(1, nrow(data)))
+  lr1(formula, data, freqs)
 }
 
 
@@ -49,6 +105,13 @@ lm1 <- function(formula, data, freqs) {
   # otherwise the formula will pick a wront variable from the global scope.
   environment(formula) <- environment()
   fit <- lm(formula, data, weights = freqs)
+  list(coef = blbcoef(fit), sigma = blbsigma(fit))
+}
+
+#' estimate the regression estimates based on given the number of repetitions
+lr1 <- function(formula,data,freqs){
+  environment(formula) <- environment()
+  fit <- glm(formula, family="binomial", data, weights = freqs,maxit=100)
   list(coef = blbcoef(fit), sigma = blbsigma(fit))
 }
 
@@ -68,7 +131,7 @@ blbsigma <- function(fit) {
   sqrt(sum(w * (e^2)) / (sum(w) - p))
 }
 
-
+#' @param x dataset for blblm model
 #' @export
 #' @method print blblm
 print.blblm <- function(x, ...) {
@@ -76,7 +139,9 @@ print.blblm <- function(x, ...) {
   cat("\n")
 }
 
-
+#' @param object the blblm model
+#' @param level significance level
+#' @param parm parameter
 #' @export
 #' @method sigma blblm
 sigma.blblm <- function(object, confidence = FALSE, level = 0.95, ...) {
@@ -93,6 +158,7 @@ sigma.blblm <- function(object, confidence = FALSE, level = 0.95, ...) {
   }
 }
 
+#' @param object the blblm model
 #' @export
 #' @method coef blblm
 coef.blblm <- function(object, ...) {
@@ -100,12 +166,14 @@ coef.blblm <- function(object, ...) {
   map_mean(est, ~ map_cbind(., "coef") %>% rowMeans())
 }
 
-
+#' @param object the blblm model
+#' @param level significance level
+#' @param parm parameter
 #' @export
 #' @method confint blblm
 confint.blblm <- function(object, parm = NULL, level = 0.95, ...) {
   if (is.null(parm)) {
-    parm <- attr(terms(fit$formula), "term.labels")
+    parm <- attr(terms(object$formula), "term.labels")
   }
   alpha <- 1 - level
   est <- object$estimates
@@ -119,6 +187,10 @@ confint.blblm <- function(object, parm = NULL, level = 0.95, ...) {
   out
 }
 
+#' @param object the blblm model
+#' @param new_data the new dataset to predict with blblm
+#' @param confidence specified confidence level or not
+#' @param level specified level, 0.95 by default
 #' @export
 #' @method predict blblm
 predict.blblm <- function(object, new_data, confidence = FALSE, level = 0.95, ...) {
